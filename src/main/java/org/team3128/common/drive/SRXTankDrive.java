@@ -8,9 +8,14 @@ import org.team3128.common.util.Assert;
 import org.team3128.common.util.Constants;
 import org.team3128.common.util.Log;
 import org.team3128.common.util.RobotMath;
+import org.team3128.common.util.Wheelbase;
+import org.team3128.common.util.datatypes.PIDConstants;
 import org.team3128.common.util.enums.Direction;
 import org.team3128.common.util.units.Angle;
 import org.team3128.common.util.units.AngularSpeed;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import com.ctre.phoenix.motion.MotionProfileStatus;
 import com.ctre.phoenix.motion.TrajectoryPoint;
@@ -19,6 +24,8 @@ import com.ctre.phoenix.motorcontrol.NeutralMode;
 import com.ctre.phoenix.motorcontrol.can.TalonSRX;
 
 import com.kauailabs.navx.frc.AHRS;
+import edu.wpi.first.wpilibj.SPI;
+
 //import edu.wpi.first.wpilibj.ADXRS450_Gyro;
 import edu.wpi.first.wpilibj.Notifier;
 import edu.wpi.first.wpilibj.command.Command;
@@ -401,6 +408,11 @@ public class SRXTankDrive implements ITankDrive
 
 		return RobotMath.normalizeAngle((difference / (Math.PI * wheelBase)) * Angle.ROTATIONS);
 	}
+	
+
+	public void configurePID(PIDConstants leftMotionProfile, PIDConstants leftVelocity, PIDConstants rightMotionProfile, PIDConstants rightVelocity) {
+		
+	}
 
 	public class CmdStaticRouteDrive extends CmdMotionProfileMove {
 		private MotionProfileStatus leftStatus, rightStatus;
@@ -430,6 +442,9 @@ public class SRXTankDrive implements ITankDrive
 		@Override
 		protected void initialize() {
 			super.initialize();
+
+			leftMotors.selectProfileSlot(0, 0);
+			rightMotors.selectProfileSlot(0, 0);
 
 			leftMotors.changeMotionControlFramePeriod((int) (Routemaker.durationMs / 2.3));
 			rightMotors.changeMotionControlFramePeriod((int) (Routemaker.durationMs / 2.3));
@@ -623,6 +638,9 @@ public class SRXTankDrive implements ITankDrive
 
 			clearEncoders();
 			setCoastNeutralMode();
+
+			leftMotors.selectProfileSlot(0, 0);
+			rightMotors.selectProfileSlot(0, 0);
 
 			// Coast speed measured in nu/100ms
 			double leftSpeed = (robotMaxSpeed * power * ((useScalars) ? leftSpeedScalar : 1.0));
@@ -866,7 +884,10 @@ public class SRXTankDrive implements ITankDrive
 
 		double leftWheelbase, rightWheelbase;
 
-		Double calculatedWheelbase;
+		Wheelbase calculatedWheelbase;
+
+		double leftSquareErrorSum, rightSquareErrorSum;
+		int errorSampleCount;
 
 		/**
 		 * @param durationMs - The amount of time for which the robot should coast.
@@ -874,14 +895,26 @@ public class SRXTankDrive implements ITankDrive
 		 * @param rightSpeed - The coast velocity of the right drive wheels.
 		 * @param calculatedWheelbase - The Double wrapper object that the finished command should stick the calculated wheelbase in.
 		 */
-		public CmdDetermineWheelbase(double durationMs, double leftSpeed, double rightSpeed, Double calculatedWheelbase) {
-			super(durationMs);
+		public CmdDetermineWheelbase(AHRS ahrs, double durationMs, double leftSpeed, double rightSpeed, Wheelbase calculatedWheelbase) {
+			super(durationMs / 1000.0);
+
+			this.ahrs = ahrs;
 
 			this.leftSpeed = leftSpeed;
 			this.rightSpeed = rightSpeed;
+
+			this.calculatedWheelbase = calculatedWheelbase;
 		}
 
 		protected void initialize() {
+			leftMotors.selectProfileSlot(1, 0);
+			rightMotors.selectProfileSlot(1, 0);
+
+			leftSquareErrorSum = 0;
+			rightSquareErrorSum = 0;
+
+			errorSampleCount = 0;
+
 			for(int i = 0; i <= 10000 ; i++) {
 				getLeftMotors().set(ControlMode.Velocity, leftSpeed * i/10000);
 				getRightMotors().set(ControlMode.Velocity, rightSpeed * i/10000);
@@ -891,6 +924,14 @@ public class SRXTankDrive implements ITankDrive
 			getRightMotors().setSelectedSensorPosition(0);
 
 			theta0 = ahrs.getAngle()*(Math.PI/180);
+		}
+
+		@Override
+		protected void execute() {
+			leftSquareErrorSum += RobotMath.square(leftSpeed - leftMotors.getSelectedSensorVelocity());
+			rightSquareErrorSum += RobotMath.square(rightSpeed - rightMotors.getSelectedSensorVelocity());
+
+			errorSampleCount += 1;
 		}
 
 		@Override
@@ -911,7 +952,10 @@ public class SRXTankDrive implements ITankDrive
 			leftWheelbase = 2 * (leftDistance/dTheta) - 2 * (leftDistance + rightDistance) / (2 * dTheta);
 			rightWheelbase = -2 * (rightDistance/dTheta) + 2 * (leftDistance + rightDistance) / (2 * dTheta);
 
-			calculatedWheelbase = (leftWheelbase + rightWheelbase)/2;
+			calculatedWheelbase.wheelbase = (leftWheelbase + rightWheelbase)/2;
+
+			calculatedWheelbase.leftVelocityError = Math.sqrt(leftSquareErrorSum / errorSampleCount);
+			calculatedWheelbase.rightVelocityError = Math.sqrt(rightSquareErrorSum / errorSampleCount);
 		}
 	}
 }
